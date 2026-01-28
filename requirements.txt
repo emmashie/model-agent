@@ -1,0 +1,17 @@
+# Requirements for ROMS Grid Agent with LLM
+
+# Core dependencies
+anthropic>=0.40.0
+xarray>=2023.0.0
+numpy>=1.24.0
+scipy>=1.10.0
+netCDF4>=1.6.0
+requests>=2.31.0
+
+# Optional for visualization
+matplotlib>=3.7.0
+cartopy>=0.22.0
+
+# For the model-tools library
+# Note: model-tools should be in the Python path
+# The agent automatically adds it via sys.path.insert()
