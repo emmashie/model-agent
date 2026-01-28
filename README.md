@@ -8,8 +8,7 @@ This repository contains intelligent agents for automating Regional Ocean Modeli
 
 ## Files
 
-- **`llm-grid-agent.py`** - ✨ New! Full-featured agent with LLM integration
-- **`simple-grid-agent.py`** - Original agent (legacy, being updated)
+- **`llm-grid-agent.py`** - ✨ Full-featured agent with LLM integration
 
 ## Features
 
