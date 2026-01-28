@@ -4,6 +4,22 @@ RODMS (Regional Ocean Data Modeling System) Agent with LLM Integration
 
 This agent uses large language models to parse natural language requests
 and automate ROMS grid generation workflows using the model-tools library.
+
+The agent workflow:
+1. Parses user's natural language request to extract region bounds
+2. Prompts user for comprehensive grid configuration parameters:
+   - Horizontal resolution (dx, dy in degrees)
+   - Vertical levels (N_layers)
+   - Vertical stretching parameters (theta_s, theta_b, hc)
+   - Bathymetry smoothing parameters (initial_smooth_sigma, hmin, rx0_thresh,
+     max_iter, smooth_sigma, buffer_size)
+3. Downloads bathymetry data for the specified region
+4. Generates ROMS-compliant grid with all specified parameters
+5. Creates visualization plots of the generated grid
+
+Usage:
+    agent = ROMSGridAgent(model_tools_path="/path/to/model-tools")
+    result = agent.execute_workflow("Create a grid for Chesapeake Bay")
 """
 
 import re
@@ -21,14 +37,14 @@ import cmocean
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 
-# Try to import anthropic, but make it optional
+# Try to import openai, but make it optional
 try:
-    from anthropic import Anthropic
-    ANTHROPIC_AVAILABLE = True
+    import openai
+    OPENAI_AVAILABLE = True
 except ImportError:
-    ANTHROPIC_AVAILABLE = False
-    Anthropic = None
-    print("Warning: anthropic library not available. Install with: pip install anthropic")
+    OPENAI_AVAILABLE = False
+    openai = None
+    print("Warning: openai library not available. Install with: pip install openai==2.6.1")
 
 # Add model-tools to path
 sys.path.insert(0, '/global/cfs/cdirs/m4304/enuss/model-tools/code')
@@ -39,19 +55,41 @@ from grid import grid_tools
 class ROMSGridAgent:
     """
     ROMS Grid Agent with LLM integration for natural language grid generation.
+    
+    This agent automates ROMS grid generation by:
+    1. Using LLM to parse natural language requests for region bounds
+    2. Interactively collecting comprehensive grid configuration parameters:
+       - Horizontal resolution (dx, dy in degrees)  
+       - Vertical levels and stretching (N_layers, theta_s, theta_b, hc)
+       - Bathymetry smoothing parameters (initial_smooth_sigma, hmin, rx0_thresh,
+         max_iter, smooth_sigma, buffer_size)
+    3. Downloading bathymetry data from SRTM15+
+    4. Generating ROMS-compliant NetCDF grid files
+    5. Creating visualization plots
+    
+    Attributes:
+        model_tools_path: Path to model-tools repository
+        output_dir: Directory for output files
+        llm: OpenAI client for LLM parsing (optional)
+        model: LLM model name to use
+        base_url: API base URL for LLM service
+        downloader: Downloader instance for bathymetry data
     """
     
     def __init__(self, model_tools_path: str, api_key: Optional[str] = None, 
-                 output_dir: Optional[str] = None):
+                 output_dir: Optional[str] = None, model: str = "claude-haiku-4-5-20251001-v1-birthright"):
         """
         Initialize agent with path to model-tools repository and optional API key.
         
         Args:
             model_tools_path: Path to model-tools directory
-            api_key: Anthropic API key (if not provided, will try to read from environment)
+            api_key: LLM API key (if not provided, will try to read from environment)
             output_dir: Directory for output files (if not provided, will prompt user)
+            model: Model name to use (default: gpt-4o-birthright)
         """
         self.model_tools_path = model_tools_path
+        self.model = model
+        self.base_url = "https://ai-incubator-api.pnnl.gov"
         
         # Set or prompt for output directory
         if output_dir is None:
@@ -66,20 +104,20 @@ class ROMSGridAgent:
         print(f"✓ Output directory: {self.output_dir}")
         
         # Initialize LLM client
-        self.api_key = api_key or os.getenv('ANTHROPIC_API_KEY')
-        if self.api_key and ANTHROPIC_AVAILABLE:
+        self.api_key = api_key or os.getenv('LLM_API_KEY') or "sk-GnJ20ijdjJyZ5QuqFmj2ag"
+        if self.api_key and OPENAI_AVAILABLE:
             try:
-                self.llm = Anthropic(api_key=self.api_key)
-                print("✓ LLM initialized successfully")
+                self.llm = openai.OpenAI(api_key=self.api_key, base_url=self.base_url)
+                print(f"✓ LLM initialized successfully (model: {self.model})")
             except Exception as e:
                 print(f"Warning: Could not initialize LLM: {e}")
                 self.llm = None
         else:
-            if not ANTHROPIC_AVAILABLE:
-                print("Warning: Anthropic library not installed. LLM features disabled.")
+            if not OPENAI_AVAILABLE:
+                print("Warning: OpenAI library not installed. LLM features disabled.")
             else:
                 print("Warning: No API key provided. LLM features will be disabled.")
-                print("Set ANTHROPIC_API_KEY environment variable to enable LLM features.")
+                print("Set LLM_API_KEY environment variable to enable LLM features.")
             self.llm = None
         
         # Initialize model-tools components
@@ -141,15 +179,369 @@ class ROMSGridAgent:
             except Exception as e:
                 print(f"⚠ Error: {e}. Please try again.")
         
+    def _prompt_for_grid_parameters(self, params: Dict) -> Dict:
+        """
+        Prompt user for comprehensive grid configuration parameters.
+        
+        Collects the following parameters interactively:
+        - Horizontal resolution: dx_deg, dy_deg (degrees)
+        - Vertical configuration: N_layers, theta_s, theta_b, hc
+        - Bathymetry smoothing: initial_smooth_sigma, hmin, rx0_thresh,
+          max_iter, smooth_sigma, buffer_size
+        
+        Only prompts for parameters not already specified in the initial request.
+        All prompts include default values and input validation.
+        
+        Args:
+            params: Dictionary with existing parameters (at minimum lat/lon ranges)
+            
+        Returns:
+            Updated dictionary with all grid parameters specified
+        """
+        print("\n" + "="*60)
+        print("Grid Configuration")
+        print("="*60)
+        print(f"\nRegion: Lat [{params['lat_min']:.2f}° to {params['lat_max']:.2f}°], "
+              f"Lon [{params['lon_min']:.2f}° to {params['lon_max']:.2f}°]")
+        print("\nPlease specify grid parameters:\n")
+        
+        # Prompt for number of vertical levels
+        while True:
+            try:
+                n_layers_input = input("Number of vertical levels (default: 50): ").strip()
+                if not n_layers_input:
+                    params['N_layers'] = 50
+                    print("  ✓ Using default: 50 vertical levels")
+                    break
+                n_layers = int(n_layers_input)
+                if n_layers < 1:
+                    print("  ⚠ Number of vertical levels must be at least 1. Please try again.")
+                    continue
+                params['N_layers'] = n_layers
+                print(f"  ✓ Using {n_layers} vertical levels")
+                break
+            except ValueError:
+                print("  ⚠ Please enter a valid integer.")
+            except KeyboardInterrupt:
+                print("\n  ⚠ Interrupted. Using default: 50 vertical levels")
+                params['N_layers'] = 50
+                break
+        
+        # Prompt for horizontal resolution in X direction (longitude)
+        while True:
+            try:
+                dx_input = input("Horizontal resolution in X (longitude) in degrees (e.g., 0.01 = ~1 km): ").strip()
+                if not dx_input:
+                    print("  ⚠ Resolution cannot be empty. Please try again.")
+                    continue
+                dx = float(dx_input)
+                if dx <= 0:
+                    print("  ⚠ Resolution must be positive. Please try again.")
+                    continue
+                params['dx_deg'] = dx
+                print(f"  ✓ Using {dx}° resolution in X direction")
+                break
+            except ValueError:
+                print("  ⚠ Please enter a valid number.")
+            except KeyboardInterrupt:
+                print("\n  ⚠ Interrupted. Using default: 0.01°")
+                params['dx_deg'] = 0.01
+                break
+        
+        # Prompt for horizontal resolution in Y direction (latitude)
+        while True:
+            try:
+                dy_input = input("Horizontal resolution in Y (latitude) in degrees (e.g., 0.01 = ~1 km): ").strip()
+                if not dy_input:
+                    print("  ⚠ Resolution cannot be empty. Please try again.")
+                    continue
+                dy = float(dy_input)
+                if dy <= 0:
+                    print("  ⚠ Resolution must be positive. Please try again.")
+                    continue
+                params['dy_deg'] = dy
+                print(f"  ✓ Using {dy}° resolution in Y direction")
+                break
+            except ValueError:
+                print("  ⚠ Please enter a valid number.")
+            except KeyboardInterrupt:
+                print("\n  ⚠ Interrupted. Using default: 0.01°")
+                params['dy_deg'] = 0.01
+                break
+        
+        # Prompt for vertical stretching parameters if not already specified
+        print("\nVertical Stretching Parameters:\n")
+        
+        # theta_s - surface stretching parameter
+        if 'theta_s' not in params or params['theta_s'] is None:
+            while True:
+                try:
+                    theta_s_input = input("Surface stretching parameter (theta_s, default: 5): ").strip()
+                    if not theta_s_input:
+                        params['theta_s'] = 5
+                        print("  ✓ Using default: 5")
+                        break
+                    theta_s = float(theta_s_input)
+                    if theta_s < 0:
+                        print("  ⚠ theta_s should be non-negative. Please try again.")
+                        continue
+                    params['theta_s'] = theta_s
+                    print(f"  ✓ Using theta_s = {theta_s}")
+                    break
+                except ValueError:
+                    print("  ⚠ Please enter a valid number.")
+                except KeyboardInterrupt:
+                    print("\n  ⚠ Interrupted. Using default: 5")
+                    params['theta_s'] = 5
+                    break
+        else:
+            print(f"  ✓ Using theta_s = {params['theta_s']} (from prompt)")
+        
+        # theta_b - bottom stretching parameter
+        if 'theta_b' not in params or params['theta_b'] is None:
+            while True:
+                try:
+                    theta_b_input = input("Bottom stretching parameter (theta_b, default: 0.5): ").strip()
+                    if not theta_b_input:
+                        params['theta_b'] = 0.5
+                        print("  ✓ Using default: 0.5")
+                        break
+                    theta_b = float(theta_b_input)
+                    if theta_b < 0:
+                        print("  ⚠ theta_b should be non-negative. Please try again.")
+                        continue
+                    params['theta_b'] = theta_b
+                    print(f"  ✓ Using theta_b = {theta_b}")
+                    break
+                except ValueError:
+                    print("  ⚠ Please enter a valid number.")
+                except KeyboardInterrupt:
+                    print("\n  ⚠ Interrupted. Using default: 0.5")
+                    params['theta_b'] = 0.5
+                    break
+        else:
+            print(f"  ✓ Using theta_b = {params['theta_b']} (from prompt)")
+        
+        # hc - critical depth
+        if 'hc' not in params or params['hc'] is None:
+            while True:
+                try:
+                    hc_input = input("Critical depth (hc, negative value, default: -500): ").strip()
+                    if not hc_input:
+                        params['hc'] = -500
+                        print("  ✓ Using default: -500 m")
+                        break
+                    hc = float(hc_input)
+                    params['hc'] = hc
+                    print(f"  ✓ Using hc = {hc} m")
+                    break
+                except ValueError:
+                    print("  ⚠ Please enter a valid number.")
+                except KeyboardInterrupt:
+                    print("\n  ⚠ Interrupted. Using default: -500 m")
+                    params['hc'] = -500
+                    break
+        else:
+            print(f"  ✓ Using hc = {params['hc']} m (from prompt)")
+        
+        # Prompt for bathymetry smoothing parameters if not already specified
+        print("\nBathymetry Smoothing Parameters:\n")
+        
+        # initial_smooth_sigma - Initial Gaussian smoothing strength
+        if 'initial_smooth_sigma' not in params or params['initial_smooth_sigma'] is None:
+            while True:
+                try:
+                    sigma_input = input("Initial Gaussian smoothing strength (default: 10): ").strip()
+                    if not sigma_input:
+                        params['initial_smooth_sigma'] = 10
+                        print("  ✓ Using default: 10")
+                        break
+                    sigma = float(sigma_input)
+                    if sigma < 0:
+                        print("  ⚠ Smoothing strength should be non-negative. Please try again.")
+                        continue
+                    params['initial_smooth_sigma'] = sigma
+                    print(f"  ✓ Using initial_smooth_sigma = {sigma}")
+                    break
+                except ValueError:
+                    print("  ⚠ Please enter a valid number.")
+                except KeyboardInterrupt:
+                    print("\n  ⚠ Interrupted. Using default: 10")
+                    params['initial_smooth_sigma'] = 10
+                    break
+        else:
+            print(f"  ✓ Using initial_smooth_sigma = {params['initial_smooth_sigma']} (from prompt)")
+        
+        # hmin - Minimum depth threshold
+        if 'hmin' not in params or params['hmin'] is None:
+            while True:
+                try:
+                    hmin_input = input("Minimum depth threshold (hmin, negative value, default: -5): ").strip()
+                    if not hmin_input:
+                        params['hmin'] = -5
+                        print("  ✓ Using default: -5 m")
+                        break
+                    hmin = float(hmin_input)
+                    params['hmin'] = hmin
+                    print(f"  ✓ Using hmin = {hmin} m")
+                    break
+                except ValueError:
+                    print("  ⚠ Please enter a valid number.")
+                except KeyboardInterrupt:
+                    print("\n  ⚠ Interrupted. Using default: -5 m")
+                    params['hmin'] = -5
+                    break
+        else:
+            print(f"  ✓ Using hmin = {params['hmin']} m (from prompt)")
+        
+        # rx0_thresh - rx0 threshold for iterative smoothing
+        if 'rx0_thresh' not in params or params['rx0_thresh'] is None:
+            while True:
+                try:
+                    rx0_input = input("rx0 threshold for iterative smoothing (default: 0.2): ").strip()
+                    if not rx0_input:
+                        params['rx0_thresh'] = 0.2
+                        print("  ✓ Using default: 0.2")
+                        break
+                    rx0 = float(rx0_input)
+                    if rx0 <= 0:
+                        print("  ⚠ rx0 threshold must be positive. Please try again.")
+                        continue
+                    params['rx0_thresh'] = rx0
+                    print(f"  ✓ Using rx0_thresh = {rx0}")
+                    break
+                except ValueError:
+                    print("  ⚠ Please enter a valid number.")
+                except KeyboardInterrupt:
+                    print("\n  ⚠ Interrupted. Using default: 0.2")
+                    params['rx0_thresh'] = 0.2
+                    break
+        else:
+            print(f"  ✓ Using rx0_thresh = {params['rx0_thresh']} (from prompt)")
+        
+        # max_iter - Maximum iterations for smoothing
+        if 'max_iter' not in params or params['max_iter'] is None:
+            while True:
+                try:
+                    iter_input = input("Maximum iterations for smoothing (default: 10): ").strip()
+                    if not iter_input:
+                        params['max_iter'] = 10
+                        print("  ✓ Using default: 10")
+                        break
+                    max_iter = int(iter_input)
+                    if max_iter < 0:
+                        print("  ⚠ Maximum iterations must be non-negative. Please try again.")
+                        continue
+                    params['max_iter'] = max_iter
+                    print(f"  ✓ Using max_iter = {max_iter}")
+                    break
+                except ValueError:
+                    print("  ⚠ Please enter a valid integer.")
+                except KeyboardInterrupt:
+                    print("\n  ⚠ Interrupted. Using default: 10")
+                    params['max_iter'] = 10
+                    break
+        else:
+            print(f"  ✓ Using max_iter = {params['max_iter']} (from prompt)")
+        
+        # smooth_sigma - Smoothing strength for iterative method
+        if 'smooth_sigma' not in params or params['smooth_sigma'] is None:
+            while True:
+                try:
+                    smooth_input = input("Smoothing strength for iterative method (default: 6): ").strip()
+                    if not smooth_input:
+                        params['smooth_sigma'] = 6
+                        print("  ✓ Using default: 6")
+                        break
+                    smooth_sig = float(smooth_input)
+                    if smooth_sig < 0:
+                        print("  ⚠ Smoothing strength should be non-negative. Please try again.")
+                        continue
+                    params['smooth_sigma'] = smooth_sig
+                    print(f"  ✓ Using smooth_sigma = {smooth_sig}")
+                    break
+                except ValueError:
+                    print("  ⚠ Please enter a valid number.")
+                except KeyboardInterrupt:
+                    print("\n  ⚠ Interrupted. Using default: 6")
+                    params['smooth_sigma'] = 6
+                    break
+        else:
+            print(f"  ✓ Using smooth_sigma = {params['smooth_sigma']} (from prompt)")
+        
+        # buffer_size - Buffer around steep regions
+        if 'buffer_size' not in params or params['buffer_size'] is None:
+            while True:
+                try:
+                    buffer_input = input("Buffer size around steep regions (default: 5): ").strip()
+                    if not buffer_input:
+                        params['buffer_size'] = 5
+                        print("  ✓ Using default: 5")
+                        break
+                    buffer = int(buffer_input)
+                    if buffer < 0:
+                        print("  ⚠ Buffer size must be non-negative. Please try again.")
+                        continue
+                    params['buffer_size'] = buffer
+                    print(f"  ✓ Using buffer_size = {buffer}")
+                    break
+                except ValueError:
+                    print("  ⚠ Please enter a valid integer.")
+                except KeyboardInterrupt:
+                    print("\n  ⚠ Interrupted. Using default: 5")
+                    params['buffer_size'] = 5
+                    break
+        else:
+            print(f"  ✓ Using buffer_size = {params['buffer_size']} (from prompt)")
+        
+        # Set legacy defaults for backward compatibility
+        params.setdefault('smoothing', True)
+        params.setdefault('rx0_threshold', params.get('rx0_thresh', 0.2))
+        
+        print("\n" + "="*60)
+        print("Grid Configuration Summary")
+        print("="*60)
+        print(f"Region:")
+        print(f"  Latitude:  {params['lat_min']:.2f}° to {params['lat_max']:.2f}°")
+        print(f"  Longitude: {params['lon_min']:.2f}° to {params['lon_max']:.2f}°")
+        print(f"Grid Resolution:")
+        print(f"  X (longitude): {params['dx_deg']:.4f}°")
+        print(f"  Y (latitude):  {params['dy_deg']:.4f}°")
+        print(f"Vertical Configuration:")
+        print(f"  Levels:         {params['N_layers']}")
+        print(f"  theta_s:        {params['theta_s']}")
+        print(f"  theta_b:        {params['theta_b']}")
+        print(f"  Critical depth: {params['hc']} m")
+        print(f"Bathymetry Smoothing:")
+        print(f"  Initial smooth sigma: {params['initial_smooth_sigma']}")
+        print(f"  Minimum depth:        {params['hmin']} m")
+        print(f"  rx0 threshold:        {params['rx0_thresh']}")
+        print(f"  Max iterations:       {params['max_iter']}")
+        print(f"  Smooth sigma:         {params['smooth_sigma']}")
+        print(f"  Buffer size:          {params['buffer_size']}")
+        print("="*60 + "\n")
+        
+        return params
+    
     def parse_location_with_llm(self, prompt: str) -> Dict:
         """
-        Use LLM to intelligently parse natural language prompts for grid parameters.
+        Use LLM to intelligently parse natural language prompts for region bounds
+        and any explicitly specified grid parameters.
+        
+        The LLM attempts to extract:
+        - Region bounds: lat_min, lat_max, lon_min, lon_max (required)
+        - Grid parameters: dx_deg, dy_deg, N_layers, theta_s, theta_b, hc,
+          initial_smooth_sigma, hmin, rx0_thresh, max_iter, smooth_sigma,
+          buffer_size (all optional)
+        
+        Any parameters not extracted will be prompted for interactively later.
         
         Args:
             prompt: User's natural language request
             
         Returns:
-            Dictionary with parsed parameters including bounds, resolution, etc.
+            Dictionary with parsed parameters. At minimum should contain lat/lon bounds.
+            Returns empty dict or error if bounds cannot be extracted.
         """
         if not self.llm:
             # Fallback to regex-based parsing
@@ -162,12 +554,17 @@ Your task is to extract grid configuration parameters from user requests.
 Extract the following information:
 1. lat_min, lat_max: Latitude range (decimal degrees, North is positive)
 2. lon_min, lon_max: Longitude range (decimal degrees, East is positive)
-3. resolution_km: Desired grid resolution in kilometers (if specified, default 1.0)
-4. resolution_deg: Desired grid resolution in degrees (if specified)
-5. N_layers: Number of vertical layers (default 50)
-6. hmin: Minimum depth in meters (default 5)
-7. smoothing: Whether to apply bathymetry smoothing (default true)
-8. rx0_threshold: Steepness parameter threshold (default 0.2)
+3. dx_deg, dy_deg: Horizontal grid resolution in degrees (if specified)
+4. N_layers: Number of vertical layers (default 50)
+5. theta_s: Surface stretching parameter (default 5)
+6. theta_b: Bottom stretching parameter (default 0.5)
+7. hc: Critical depth in meters, negative value (default -500)
+8. initial_smooth_sigma: Initial Gaussian smoothing strength (default 10)
+9. hmin: Minimum depth threshold in meters, negative value (default -5)
+10. rx0_thresh: rx0 threshold for iterative smoothing (default 0.2)
+11. max_iter: Maximum smoothing iterations (default 10)
+12. smooth_sigma: Smoothing strength for iterative method (default 6)
+13. buffer_size: Buffer around steep regions (default 5)
 
 Common location references:
 - US East Coast: approximately 24°N to 45°N, -81°W to -65°W
@@ -179,21 +576,21 @@ Common location references:
 - Cape Cod: approximately 41°N to 42.5°N, -71°W to -69.5°W
 
 Return ONLY a valid JSON object with the extracted parameters. Use null for missing values.
-Example: {"lat_min": 35.0, "lat_max": 42.0, "lon_min": -75.0, "lon_max": -65.0, "resolution_km": 1.0, "N_layers": 50, "hmin": 5, "smoothing": true, "rx0_threshold": 0.2}"""
+Example: {"lat_min": 35.0, "lat_max": 42.0, "lon_min": -75.0, "lon_max": -65.0, "dx_deg": 0.01, "dy_deg": 0.01, "N_layers": 50, "theta_s": 5, "theta_b": 0.5, "hc": -500, "initial_smooth_sigma": 10, "hmin": -5, "rx0_thresh": 0.2, "max_iter": 10, "smooth_sigma": 6, "buffer_size": 5}"""
         
         try:
             print("🤖 Querying LLM to parse request...")
-            response = self.llm.messages.create(
-                model="claude-3-5-sonnet-20241022",
+            response = self.llm.chat.completions.create(
+                model=self.model,
                 max_tokens=1024,
-                system=system_prompt,
                 messages=[
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt}
                 ]
             )
             
             # Extract JSON from response
-            content = response.content[0].text
+            content = response.choices[0].message.content
             print(f"LLM response: {content}")
             
             # Try to find JSON in the response
@@ -214,6 +611,16 @@ Example: {"lat_min": 35.0, "lat_max": 42.0, "lon_min": -75.0, "lon_max": -65.0, 
         """
         Extract latitude and longitude ranges from natural language prompt using regex.
         Fallback method when LLM is not available.
+        
+        This basic parser only extracts lat/lon bounds. All other parameters will
+        be prompted for interactively.
+        
+        Args:
+            prompt: Natural language request containing lat/lon information
+            
+        Returns:
+            Dictionary with lat_min, lat_max, lon_min, lon_max if found,
+            otherwise empty dict
         """
         # Regex patterns for different coordinate formats
         patterns = {
@@ -243,12 +650,8 @@ Example: {"lat_min": 35.0, "lat_max": 42.0, "lon_min": -75.0, "lon_max": -65.0, 
                     'lon_max': float(numbers[3])
                 }
         
-        # Set defaults
-        result.setdefault('resolution_km', 1.0)
-        result.setdefault('N_layers', 50)
-        result.setdefault('hmin', 5)
-        result.setdefault('smoothing', True)
-        result.setdefault('rx0_threshold', 0.2)
+        # Set defaults - these will be prompted for if not in result
+        # Just ensure we have the minimum required (lat/lon bounds)
         
         return result
     
@@ -289,10 +692,24 @@ Example: {"lat_min": 35.0, "lat_max": 42.0, "lon_min": -75.0, "lon_max": -65.0, 
         """
         Generate ROMS grid using model-tools and bathymetry data.
         
+        Creates a complete ROMS grid file with:
+        - Horizontal grid at specified resolution (dx_deg, dy_deg)
+        - Vertical levels with stretching (N_layers, theta_s, theta_b, hc)
+        - Smoothed bathymetry using specified smoothing parameters
+        - Land/sea masks
+        - Staggered grids (u, v, psi points)
+        - Grid metrics (pm, pn, dndx, dmde, etc.)
+        - Visualization plots
+        
         Args:
             bathy_file: Path to bathymetry NetCDF file
-            params: Dictionary with grid parameters
-            output_file: Output grid filename
+            params: Dictionary with all grid parameters including:
+                   - Region bounds: lat_min, lat_max, lon_min, lon_max
+                   - Resolution: dx_deg, dy_deg
+                   - Vertical: N_layers, theta_s, theta_b, hc
+                   - Smoothing: initial_smooth_sigma, hmin, rx0_thresh,
+                     max_iter, smooth_sigma, buffer_size
+            output_file: Output grid filename (default: "roms_grid.nc")
             
         Returns:
             Path to generated grid file
@@ -473,14 +890,35 @@ Example: {"lat_min": 35.0, "lat_max": 42.0, "lon_min": -75.0, "lon_max": -65.0, 
     
     def execute_workflow(self, prompt: str) -> Dict:
         """
-        Main workflow: parse prompt -> download bathymetry -> generate grid.
-        Uses LLM to intelligently parse the user's request.
+        Main workflow: parse prompt -> prompt for parameters -> download bathymetry -> generate grid.
+        
+        Workflow steps:
+        1. Parse natural language prompt to extract region bounds (lat/lon)
+        2. Interactively prompt user for comprehensive grid parameters:
+           - Horizontal resolution (dx, dy in degrees)
+           - Vertical configuration (N_layers, theta_s, theta_b, hc)
+           - Bathymetry smoothing (initial_smooth_sigma, hmin, rx0_thresh,
+             max_iter, smooth_sigma, buffer_size)
+        3. Download bathymetry data for the region
+        4. Generate ROMS grid with all specified parameters
+        5. Create visualization plots
         
         Args:
-            prompt: Natural language description of desired ROMS grid
+            prompt: Natural language description of desired ROMS grid region.
+                   Should include location/region name or lat/lon bounds.
+                   Examples:
+                   - "Create a grid for Chesapeake Bay"
+                   - "Set up a model from lat 35-42, lon -75 to -65"
+                   - "Generate a grid for the US East Coast"
             
         Returns:
-            Dictionary with workflow results and output file paths
+            Dictionary with workflow results including:
+            - success: Boolean indicating if workflow completed
+            - parameters: Dict of all grid parameters used
+            - bathymetry_file: Path to downloaded bathymetry file
+            - grid_file: Path to generated ROMS grid file
+            - message: Status message
+            - error: Error message (if workflow failed)
         """
         print("=" * 60)
         print("ROMS Grid Generation Agent with LLM")
@@ -492,7 +930,10 @@ Example: {"lat_min": 35.0, "lat_max": 42.0, "lon_min": -75.0, "lon_max": -65.0, 
         if not params or 'lat_min' not in params:
             return {"error": "Could not extract lat/lon bounds from prompt"}
         
-        # Step 2: Download bathymetry
+        # Step 2: Prompt user for grid parameters
+        params = self._prompt_for_grid_parameters(params)
+        
+        # Step 3: Download bathymetry
         try:
             bathy_file = self.download_bathymetry(
                 (params['lat_min'], params['lat_max']),
@@ -501,7 +942,7 @@ Example: {"lat_min": 35.0, "lat_max": 42.0, "lon_min": -75.0, "lon_max": -65.0, 
         except Exception as e:
             return {"error": f"Bathymetry download failed: {str(e)}"}
         
-        # Step 3: Generate ROMS grid
+        # Step 4: Generate ROMS grid
         try:
             grid_file = self.generate_grid(bathy_file, params)
         except Exception as e:
@@ -521,7 +962,28 @@ Example: {"lat_min": 35.0, "lat_max": 42.0, "lon_min": -75.0, "lon_max": -65.0, 
 
 
 def main():
-    """Main function for testing the agent"""
+    """
+    Main function for testing the agent.
+    
+    The agent will:
+    1. Parse the natural language request to extract region bounds
+    2. Prompt the user interactively for all grid parameters:
+       - Horizontal resolution (dx, dy in degrees)
+       - Number of vertical levels
+       - Vertical stretching parameters (theta_s, theta_b, hc)
+       - Bathymetry smoothing parameters (initial_smooth_sigma, hmin, 
+         rx0_thresh, max_iter, smooth_sigma, buffer_size)
+    3. Download bathymetry data
+    4. Generate ROMS grid with specified parameters
+    5. Create visualization plots
+    
+    Example usage:
+        # Set API key in environment
+        export LLM_API_KEY=<your-key>
+        
+        # Run the agent
+        python llm_grid_agent.py
+    """
     # Initialize agent - will prompt for output directory if not provided
     agent = ROMSGridAgent(
         model_tools_path="/global/cfs/cdirs/m4304/enuss/model-tools",
@@ -529,14 +991,22 @@ def main():
     )
     
     # Test prompts demonstrating different capabilities
+    # Note: The agent will prompt for detailed parameters regardless of what's in the request
     test_prompts = [
-        "Create a 1 km resolution grid for the US East Coast from latitude 35.0 to 42.0 and longitude -75.0 to -65.0",
-        "I need a ROMS grid for Chesapeake Bay with 50 vertical layers",
-        "Set up a model for the Gulf of Maine region with 2km resolution",
-        "Generate a grid: lat 30-40, lon -80 to -70, 1km resolution, 40 layers",
+        "Create a grid for the US East Coast from latitude 35.0 to 42.0 and longitude -75.0 to -65.0",
+        "I need a ROMS grid for Chesapeake Bay",
+        "Set up a model for the Gulf of Maine region",
+        "Generate a grid: lat 30-40, lon -80 to -70",
+        "Create a grid for the California coast",
     ]
     
-    # Run with first prompt
+    # Run with first prompt - user will be prompted for all grid parameters
+    print("\nNote: After region parsing, you will be prompted to enter:")
+    print("  - Horizontal resolution (dx, dy in degrees)")
+    print("  - Number of vertical levels")
+    print("  - Vertical stretching parameters (theta_s, theta_b, hc)")
+    print("  - Bathymetry smoothing parameters\n")
+    
     result = agent.execute_workflow(test_prompts[0])
     
     print("\n" + "=" * 60)

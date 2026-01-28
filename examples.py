@@ -11,10 +11,14 @@ import sys
 
 # Add parent directory to path if running as script
 if __name__ == "__main__":
-    sys.path.insert(0, os.path.dirname(__file__))
+    try:
+        sys.path.insert(0, os.path.dirname(__file__))
+    except NameError:
+        # __file__ is not defined in interactive environments
+        sys.path.insert(0, os.getcwd())
 
 from llm_grid_agent import ROMSGridAgent
-
+ 
 
 def example_1_explicit_coordinates():
     """Example 1: Explicit coordinate specification"""
@@ -49,7 +53,7 @@ def example_2_named_region():
     
     agent = ROMSGridAgent(
         model_tools_path="/global/cfs/cdirs/m4304/enuss/model-tools",
-        output_dir="/global/cfs/cdirs/m4304/enuss/model-tools/output"
+        output_dir="/global/cfs/cdirs/m4304/enuss/model-tools/output/agent_test"
     )
     
     result = agent.execute_workflow(
@@ -76,7 +80,7 @@ def example_3_custom_parameters():
     
     agent = ROMSGridAgent(
         model_tools_path="/global/cfs/cdirs/m4304/enuss/model-tools",
-        output_dir="/global/cfs/cdirs/m4304/enuss/model-tools/output"
+        output_dir="/global/cfs/cdirs/m4304/enuss/model-tools/output/agent_test"
     )
     
     result = agent.execute_workflow(
@@ -132,7 +136,7 @@ def example_5_without_llm():
     
     agent = ROMSGridAgent(
         model_tools_path="/global/cfs/cdirs/m4304/enuss/model-tools",
-        output_dir="/global/cfs/cdirs/m4304/enuss/model-tools/output"
+        output_dir="/global/cfs/cdirs/m4304/enuss/model-tools/output/agent_test"
     )
     
     result = agent.execute_workflow(
