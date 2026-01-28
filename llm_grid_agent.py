@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3 
 """
 RODMS (Regional Ocean Data Modeling System) Agent with LLM Integration
 
@@ -84,27 +84,18 @@ class ROMSGridAgent:
         Args:
             model_tools_path: Path to model-tools directory
             api_key: LLM API key (if not provided, will try to read from environment)
-            output_dir: Directory for output files (if not provided, will prompt user)
+            output_dir: Directory for output files (if not provided, will prompt during workflow execution)
             model: Model name to use (default: gpt-4o-birthright)
         """
         self.model_tools_path = model_tools_path
         self.model = model
         self.base_url = "https://ai-incubator-api.pnnl.gov"
         
-        # Set or prompt for output directory
-        if output_dir is None:
-            output_dir = self._prompt_for_output_dir()
-        
-        # Validate and create output directory if needed
-        self.output_dir = os.path.abspath(os.path.expanduser(output_dir))
-        if not os.path.exists(self.output_dir):
-            print(f"Creating output directory: {self.output_dir}")
-            os.makedirs(self.output_dir, exist_ok=True)
-        
-        print(f"✓ Output directory: {self.output_dir}")
+        # Store output_dir, but don't prompt yet - will prompt during workflow execution if needed
+        self._output_dir = output_dir
         
         # Initialize LLM client
-        self.api_key = api_key or os.getenv('LLM_API_KEY') or "sk-GnJ20ijdjJyZ5QuqFmj2ag"
+        self.api_key = api_key or os.getenv('LLM_API_KEY')
         if self.api_key and OPENAI_AVAILABLE:
             try:
                 self.llm = openai.OpenAI(api_key=self.api_key, base_url=self.base_url)
@@ -123,6 +114,19 @@ class ROMSGridAgent:
         # Initialize model-tools components
         self.downloader = Downloader()
         print("✓ Model tools initialized")
+    
+    @property
+    def output_dir(self):
+        """Get output directory, prompting if not yet set."""
+        if self._output_dir is None:
+            self._output_dir = self._prompt_for_output_dir()
+            # Validate and create output directory if needed
+            self._output_dir = os.path.abspath(os.path.expanduser(self._output_dir))
+            if not os.path.exists(self._output_dir):
+                print(f"Creating output directory: {self._output_dir}")
+                os.makedirs(self._output_dir, exist_ok=True)
+            print(f"✓ Output directory: {self._output_dir}")
+        return self._output_dir
     
     def _prompt_for_output_dir(self) -> str:
         """
@@ -178,6 +182,93 @@ class ROMSGridAgent:
                 return os.getcwd()
             except Exception as e:
                 print(f"⚠ Error: {e}. Please try again.")
+    
+    def _prompt_for_simulation_goals(self) -> str:
+        """
+        Interactively ask user about their simulation objectives if not specified.
+        
+        Returns:
+            String describing simulation goals and phenomena to resolve
+        """
+        print("\n" + "="*60)
+        print("Simulation Objectives")
+        print("="*60)
+        print("\nTo suggest appropriate grid parameters, please describe:")
+        print("  - What phenomena do you want to resolve?")
+        print("    (e.g., submesoscale eddies, coastal upwelling, tides, etc.)")
+        print("  - What type of simulation are you running?")
+        print("    (e.g., process study, operational forecast, climate, etc.)")
+        print("  - Any specific scale requirements?")
+        print("    (e.g., O(1km) resolution, fine vertical structure, etc.)")
+        
+        print("\nExamples:")
+        print("  - 'Submesoscale resolving simulation for process studies'")
+        print("  - 'Mesoscale circulation with focus on shelf dynamics'")
+        print("  - 'Coastal model for tidal and estuarine processes'")
+        print("  - 'Large-scale ocean circulation for climate studies'")
+        
+        while True:
+            try:
+                goals = input("\nDescribe your simulation objectives: ").strip()
+                if goals:
+                    print(f"✓ Simulation goals: {goals}")
+                    return goals
+                else:
+                    print("⚠ Please provide some description of your simulation goals.")
+            except KeyboardInterrupt:
+                print("\n⚠ Interrupted. Using generic configuration.")
+                return "general ocean modeling"
+    
+    def _offer_suggested_parameters(self, suggestions: Dict) -> bool:
+        """
+        Display suggested parameters and ask user if they want to use them.
+        
+        Args:
+            suggestions: Dict with suggested parameters and reasoning
+            
+        Returns:
+            True if user accepts suggestions, False if they want to customize
+        """
+        print("\n" + "="*60)
+        print("Suggested Grid Configuration")
+        print("="*60)
+        
+        if 'reasoning' in suggestions:
+            print(f"\n📊 Recommendation: {suggestions['reasoning']}\n")
+        
+        print("Suggested Parameters:")
+        print(f"  Horizontal Resolution:")
+        print(f"    • dx (longitude): {suggestions.get('dx_deg', 0.05):.4f}° (~{suggestions.get('dx_deg', 0.05)*111:.1f} km)")
+        print(f"    • dy (latitude):  {suggestions.get('dy_deg', 0.05):.4f}° (~{suggestions.get('dy_deg', 0.05)*111:.1f} km)")
+        print(f"  Vertical Configuration:")
+        print(f"    • N_layers:  {suggestions.get('N_layers', 40)}")
+        print(f"    • theta_s:   {suggestions.get('theta_s', 5.0)} (surface stretching)")
+        print(f"    • theta_b:   {suggestions.get('theta_b', 0.5)} (bottom stretching)")
+        print(f"    • hc:        {suggestions.get('hc', 300.0)} m (critical depth)")
+        print(f"  Bathymetry Smoothing:")
+        print(f"    • Initial smooth:  {suggestions.get('initial_smooth_sigma', 10.0)}")
+        print(f"    • Min depth:       {suggestions.get('hmin', -5.0)} m")
+        print(f"    • rx0 threshold:   {suggestions.get('rx0_thresh', 0.2)}")
+        print(f"    • Max iterations:  {suggestions.get('max_iter', 10)}")
+        print(f"    • Smooth sigma:    {suggestions.get('smooth_sigma', 6.0)}")
+        print(f"    • Buffer size:     {suggestions.get('buffer_size', 5)}")
+        
+        print("\n" + "="*60)
+        
+        while True:
+            try:
+                response = input("\nUse these suggested parameters? [Y/n] (Y to accept, n to customize): ").strip().lower()
+                if response in ('', 'y', 'yes'):
+                    print("✓ Using suggested parameters")
+                    return True
+                elif response in ('n', 'no'):
+                    print("✓ Will prompt for custom parameters")
+                    return False
+                else:
+                    print("⚠ Please enter 'y' or 'n'")
+            except KeyboardInterrupt:
+                print("\n⚠ Interrupted. Using suggested parameters.")
+                return True
         
     def _prompt_for_grid_parameters(self, params: Dict) -> Dict:
         """
@@ -322,7 +413,7 @@ class ROMSGridAgent:
         else:
             print(f"  ✓ Using theta_b = {params['theta_b']} (from prompt)")
         
-        # hc - critical depth
+        # hc - critical depth (note: stored as negative, converted to positive for ROMS output)
         if 'hc' not in params or params['hc'] is None:
             while True:
                 try:
@@ -338,8 +429,8 @@ class ROMSGridAgent:
                 except ValueError:
                     print("  ⚠ Please enter a valid number.")
                 except KeyboardInterrupt:
-                    print("\n  ⚠ Interrupted. Using default: -500 m")
-                    params['hc'] = -500
+                    print("\n  ⚠ Interrupted. Using default: 100 m")
+                    params['hc'] = 100
                     break
         else:
             print(f"  ✓ Using hc = {params['hc']} m (from prompt)")
@@ -351,10 +442,10 @@ class ROMSGridAgent:
         if 'initial_smooth_sigma' not in params or params['initial_smooth_sigma'] is None:
             while True:
                 try:
-                    sigma_input = input("Initial Gaussian smoothing strength (default: 10): ").strip()
+                    sigma_input = input("Initial Gaussian smoothing strength (default: 0.001): ").strip()
                     if not sigma_input:
-                        params['initial_smooth_sigma'] = 10
-                        print("  ✓ Using default: 10")
+                        params['initial_smooth_sigma'] = 0.001
+                        print("  ✓ Using default: 0.001")
                         break
                     sigma = float(sigma_input)
                     if sigma < 0:
@@ -398,10 +489,10 @@ class ROMSGridAgent:
         if 'rx0_thresh' not in params or params['rx0_thresh'] is None:
             while True:
                 try:
-                    rx0_input = input("rx0 threshold for iterative smoothing (default: 0.2): ").strip()
+                    rx0_input = input("rx0 threshold for iterative smoothing (default: 0.3): ").strip()
                     if not rx0_input:
-                        params['rx0_thresh'] = 0.2
-                        print("  ✓ Using default: 0.2")
+                        params['rx0_thresh'] = 0.3
+                        print("  ✓ Using default: 0.3")
                         break
                     rx0 = float(rx0_input)
                     if rx0 <= 0:
@@ -423,10 +514,10 @@ class ROMSGridAgent:
         if 'max_iter' not in params or params['max_iter'] is None:
             while True:
                 try:
-                    iter_input = input("Maximum iterations for smoothing (default: 10): ").strip()
+                    iter_input = input("Maximum iterations for smoothing (default: 5): ").strip()
                     if not iter_input:
-                        params['max_iter'] = 10
-                        print("  ✓ Using default: 10")
+                        params['max_iter'] = 5
+                        print("  ✓ Using default: 5")
                         break
                     max_iter = int(iter_input)
                     if max_iter < 0:
@@ -448,10 +539,10 @@ class ROMSGridAgent:
         if 'smooth_sigma' not in params or params['smooth_sigma'] is None:
             while True:
                 try:
-                    smooth_input = input("Smoothing strength for iterative method (default: 6): ").strip()
+                    smooth_input = input("Smoothing strength for iterative method (default: 1): ").strip()
                     if not smooth_input:
-                        params['smooth_sigma'] = 6
-                        print("  ✓ Using default: 6")
+                        params['smooth_sigma'] = 1
+                        print("  ✓ Using default: 1")
                         break
                     smooth_sig = float(smooth_input)
                     if smooth_sig < 0:
@@ -473,10 +564,10 @@ class ROMSGridAgent:
         if 'buffer_size' not in params or params['buffer_size'] is None:
             while True:
                 try:
-                    buffer_input = input("Buffer size around steep regions (default: 5): ").strip()
+                    buffer_input = input("Buffer size around steep regions (default: 3): ").strip()
                     if not buffer_input:
-                        params['buffer_size'] = 5
-                        print("  ✓ Using default: 5")
+                        params['buffer_size'] = 3
+                        print("  ✓ Using default: 3")
                         break
                     buffer = int(buffer_input)
                     if buffer < 0:
@@ -525,16 +616,17 @@ class ROMSGridAgent:
     
     def parse_location_with_llm(self, prompt: str) -> Dict:
         """
-        Use LLM to intelligently parse natural language prompts for region bounds
-        and any explicitly specified grid parameters.
+        Use LLM to intelligently parse natural language prompts for region bounds,
+        any explicitly specified grid parameters, and simulation objectives.
         
         The LLM attempts to extract:
         - Region bounds: lat_min, lat_max, lon_min, lon_max (required)
+        - Simulation goals: description of what phenomena to resolve, simulation type
         - Grid parameters: dx_deg, dy_deg, N_layers, theta_s, theta_b, hc,
           initial_smooth_sigma, hmin, rx0_thresh, max_iter, smooth_sigma,
           buffer_size (all optional)
         
-        Any parameters not extracted will be prompted for interactively later.
+        Any parameters not extracted will be suggested intelligently or prompted for.
         
         Args:
             prompt: User's natural language request
@@ -549,24 +641,28 @@ class ROMSGridAgent:
             return self.parse_location_basic(prompt)
         
         system_prompt = """You are a specialized assistant for ROMS ocean modeling grid generation.
-Your task is to extract grid configuration parameters from user requests.
+Your task is to extract grid configuration parameters AND simulation objectives from user requests.
+
+CRITICAL: ONLY extract parameters that are EXPLICITLY mentioned in the user's request.
+Do NOT provide default values. Return null for any parameter not explicitly stated.
 
 Extract the following information:
 1. lat_min, lat_max: Latitude range (decimal degrees, North is positive)
 2. lon_min, lon_max: Longitude range (decimal degrees, East is positive)
-3. dx_deg, dy_deg: Horizontal grid resolution in degrees (if specified)
-4. N_layers: Number of vertical layers (default 50)
-5. theta_s: Surface stretching parameter (default 5)
-6. theta_b: Bottom stretching parameter (default 0.5)
-7. hc: Critical depth in meters, negative value (default -500)
-8. initial_smooth_sigma: Initial Gaussian smoothing strength (default 10)
-9. hmin: Minimum depth threshold in meters, negative value (default -5)
-10. rx0_thresh: rx0 threshold for iterative smoothing (default 0.2)
-11. max_iter: Maximum smoothing iterations (default 10)
-12. smooth_sigma: Smoothing strength for iterative method (default 6)
-13. buffer_size: Buffer around steep regions (default 5)
+3. simulation_goals: Description of what the user wants to simulate or resolve (e.g., "submesoscale resolving", "coastal dynamics", "large-scale circulation"). Extract even brief mentions. Return null only if absolutely no goal is mentioned.
+4. dx_deg, dy_deg: Horizontal grid resolution in degrees (if explicitly specified)
+5. N_layers: Number of vertical layers (only if explicitly mentioned)
+6. theta_s: Surface stretching parameter (only if explicitly mentioned)
+7. theta_b: Bottom stretching parameter (only if explicitly mentioned)
+8. hc: Critical depth in meters, POSITIVE value (only if explicitly mentioned)
+9. initial_smooth_sigma: Initial Gaussian smoothing strength (only if explicitly mentioned)
+10. hmin: Minimum depth threshold in meters, negative value (only if explicitly mentioned)
+11. rx0_thresh: rx0 threshold for iterative smoothing (only if explicitly mentioned)
+12. max_iter: Maximum smoothing iterations (only if explicitly mentioned)
+13. smooth_sigma: Smoothing strength for iterative method (only if explicitly mentioned)
+14. buffer_size: Buffer around steep regions (only if explicitly mentioned)
 
-Common location references:
+Common location references (extract lat/lon bounds):
 - US East Coast: approximately 24°N to 45°N, -81°W to -65°W
 - Gulf of Mexico: approximately 18°N to 31°N, -98°W to -80°W
 - California Coast: approximately 32°N to 42°N, -125°W to -117°W
@@ -574,9 +670,15 @@ Common location references:
 - Gulf of Maine: approximately 41°N to 45°N, -71°W to -66°W
 - Florida Keys: approximately 24.5°N to 25.5°N, -82°W to -80°W
 - Cape Cod: approximately 41°N to 42.5°N, -71°W to -69.5°W
+- Gulf Stream: approximately 25°N to 45°N, -80°W to -50°W
+- Puget Sound: approximately 47°N to 49°N, -123.5°W to -122°W
 
-Return ONLY a valid JSON object with the extracted parameters. Use null for missing values.
-Example: {"lat_min": 35.0, "lat_max": 42.0, "lon_min": -75.0, "lon_max": -65.0, "dx_deg": 0.01, "dy_deg": 0.01, "N_layers": 50, "theta_s": 5, "theta_b": 0.5, "hc": -500, "initial_smooth_sigma": 10, "hmin": -5, "rx0_thresh": 0.2, "max_iter": 10, "smooth_sigma": 6, "buffer_size": 5}"""
+Return ONLY a valid JSON object with the extracted parameters. Use null for any parameter not explicitly mentioned.
+Example 1: "Create grid for lat 35-42, lon -75 to -65 with 0.01 degree resolution":
+{"lat_min": 35.0, "lat_max": 42.0, "lon_min": -75.0, "lon_max": -65.0, "simulation_goals": null, "dx_deg": 0.01, "dy_deg": 0.01, "N_layers": null, "theta_s": null, "theta_b": null, "hc": null, "initial_smooth_sigma": null, "hmin": null, "rx0_thresh": null, "max_iter": null, "smooth_sigma": null, "buffer_size": null}
+
+Example 2: "I want to set up a submesoscale resolving grid of the gulf stream":
+{"lat_min": 25.0, "lat_max": 45.0, "lon_min": -80.0, "lon_max": -50.0, "simulation_goals": "submesoscale resolving simulation of the Gulf Stream", "dx_deg": null, "dy_deg": null, "N_layers": null, "theta_s": null, "theta_b": null, "hc": null, "initial_smooth_sigma": null, "hmin": null, "rx0_thresh": null, "max_iter": null, "smooth_sigma": null, "buffer_size": null}"""
         
         try:
             print("🤖 Querying LLM to parse request...")
@@ -606,6 +708,226 @@ Example: {"lat_min": 35.0, "lat_max": 42.0, "lon_min": -75.0, "lon_max": -65.0, 
         except Exception as e:
             print(f"⚠ Error using LLM: {e}. Falling back to basic parsing.")
             return self.parse_location_basic(prompt)
+    
+    def _suggest_grid_parameters_with_llm(self, location_params: Dict, simulation_goals: str) -> Dict:
+        """
+        Use LLM with domain knowledge to suggest appropriate grid parameters.
+        
+        Uses knowledge of:
+        - ROMS S-coordinate vertical stretching (https://www.myroms.org/wiki/Vertical_S-coordinate)
+        - Different resolution requirements for different phenomena
+        - Regional oceanographic characteristics
+        
+        Args:
+            location_params: Dict with lat/lon bounds
+            simulation_goals: Description of simulation objectives
+            
+        Returns:
+            Dict with suggested grid parameters
+        """
+        if not self.llm:
+            return self._suggest_grid_parameters_basic(location_params, simulation_goals)
+        
+        lat_min, lat_max = location_params['lat_min'], location_params['lat_max']
+        lon_min, lon_max = location_params['lon_min'], location_params['lon_max']
+        
+        system_prompt = """You are an expert ROMS ocean modeler with deep knowledge of grid configuration.
+
+Your task: Suggest appropriate grid parameters based on the region and simulation goals.
+
+Knowledge Base:
+
+1. ROMS Vertical S-Coordinate Stretching:
+   - theta_s (0-10): Controls surface stretching. Higher values concentrate levels near surface.
+     * Submesoscale/fine surface: 7-10
+     * Standard mixed layer: 5-7
+     * Coarse/deep ocean: 3-5
+   - theta_b (0-4): Controls bottom stretching. Higher values concentrate levels near bottom.
+     * Strong bottom boundary layer: 2-4
+     * Standard: 0.5-2
+     * Surface-focused: 0-0.5
+   - hc (positive depth in m): Transition depth between sigma and z-like coordinates.
+     * Shallow shelf (< 200m): 10 to 50 m
+     * Coastal (200-1000m): 50 to 250 m
+     * Deep ocean (> 1000m): 250 to 500 m
+
+2. Horizontal Resolution Guidelines:
+   - Submesoscale-resolving: O(1 km) = ~0.01°
+   - Mesoscale-resolving: O(5-10 km) = ~0.05-0.1°
+   - Regional/shelf: O(2-5 km) = ~0.02-0.05°
+   - Basin-scale: O(10-25 km) = ~0.1-0.25°
+
+3. Vertical Levels:
+   - Fine surface processes: 50-100 levels
+   - Standard ocean: 30-50 levels
+   - Coarse/efficient: 20-30 levels
+
+4. Regional Characteristics:
+   - Shallow shelves/estuaries: More vertical levels, shallower hc, higher theta_b
+   - Deep ocean: Fewer levels acceptable, deeper hc
+   - Coastal upwelling: Moderate levels, balance theta_s and theta_b
+   - Frontal/mesoscale: Higher resolution, more surface stretching
+
+5. Bathymetry Smoothing:
+   - Steeper bathymetry needs: Lower rx0_thresh (0.15-0.2), more iterations (10-20)
+   - Gentler bathymetry: Higher rx0_thresh (0.2-0.3), fewer iterations (5-10)
+   - IMPORTANT: If preserving features (canyons, ridges, seamounts) is mentioned:
+     * Use minimal smoothing: initial_smooth_sigma=0.5-1.0, smooth_sigma=0.5-1.0
+     * Increase resolution if needed to resolve features
+     * Higher rx0_thresh (0.25-0.3) and fewer iterations (3-5)
+   - Submarine canyons, ridges, and seamounts are often critical for circulation/upwelling
+
+Provide suggestions as JSON with brief reasoning:
+{
+  "dx_deg": <value>,
+  "dy_deg": <value>,
+  "N_layers": <value>,
+  "theta_s": <value>,
+  "theta_b": <value>,
+  "hc": <value>,
+  "initial_smooth_sigma": <value>,
+  "hmin": <value>,
+  "rx0_thresh": <value>,
+  "max_iter": <value>,
+  "smooth_sigma": <value>,
+  "buffer_size": <value>,
+  "reasoning": "<Brief explanation of suggestions based on goals and region>"
+}"""
+        
+        user_prompt = f"""Region: Lat {lat_min}° to {lat_max}°, Lon {lon_min}° to {lon_max}°
+Simulation Goals: {simulation_goals}
+
+Suggest appropriate ROMS grid parameters for this configuration."""
+        
+        try:
+            print("\n🤖 Analyzing region and simulation goals to suggest parameters...")
+            response = self.llm.chat.completions.create(
+                model=self.model,
+                max_tokens=2048,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ]
+            )
+            
+            content = response.choices[0].message.content
+            
+            # Extract JSON from response
+            json_match = re.search(r'\{[^}]+\}', content, re.DOTALL)
+            if json_match:
+                suggestions = json.loads(json_match.group())
+                return suggestions
+            else:
+                print("⚠ Could not parse LLM suggestions. Using basic suggestions.")
+                return self._suggest_grid_parameters_basic(location_params, simulation_goals)
+                
+        except Exception as e:
+            print(f"⚠ Error getting LLM suggestions: {e}. Using basic suggestions.")
+            return self._suggest_grid_parameters_basic(location_params, simulation_goals)
+    
+    def _suggest_grid_parameters_basic(self, location_params: Dict, simulation_goals: str) -> Dict:
+        """
+        Provide basic parameter suggestions based on simple heuristics.
+        Fallback when LLM is not available.
+        
+        Args:
+            location_params: Dict with lat/lon bounds  
+            simulation_goals: Description of simulation objectives
+            
+        Returns:
+            Dict with suggested grid parameters
+        """
+        # Simple keyword-based classification
+        goals_lower = simulation_goals.lower()
+        
+        # Determine configuration type
+        if any(word in goals_lower for word in ['submesoscale', 'fine', 'high-resolution', 'eddy-resolving']):
+            config = {
+                'dx_deg': 0.01,
+                'dy_deg': 0.01,
+                'N_layers': 50,
+                'theta_s': 7.0,
+                'theta_b': 2.0,
+                'hc': -500,  # Negative value, matches grid_generation.py
+                'initial_smooth_sigma': 0.001,  # Matches grid_generation.py default
+                'hmin': -5.0,
+                'rx0_thresh': 0.3,  # Matches grid_generation.py default
+                'max_iter': 5,  # Matches grid_generation.py default
+                'smooth_sigma': 1.0,  # Matches grid_generation.py default
+                'buffer_size': 3,  # Matches grid_generation.py default
+                'reasoning': 'Submesoscale-resolving configuration: ~1km resolution, 50 vertical levels with strong surface stretching.'
+            }
+        elif any(word in goals_lower for word in ['coastal', 'shelf', 'estuarine', 'upwelling']):
+            # Check if feature preservation is mentioned
+            preserve_features = any(word in goals_lower for word in 
+                ['canyon', 'ridge', 'seamount', 'feature', 'preserve', 'topography', 'bathymetry'])
+            
+            if preserve_features:
+                config = {
+                    'dx_deg': 0.01,  # Higher resolution to resolve features
+                    'dy_deg': 0.01,
+                    'N_layers': 40,
+                    'theta_s': 6.0,
+                    'theta_b': 2.0,
+                    'hc': -500,  # Negative value, matches grid_generation.py
+                    'initial_smooth_sigma': 0.001,  # Minimal smoothing, matches grid_generation.py
+                    'hmin': -5.0,
+                    'rx0_thresh': 0.35,  # More tolerant for feature preservation
+                    'max_iter': 3,  # Fewer iterations for feature preservation
+                    'smooth_sigma': 0.5,  # Minimal smoothing for feature preservation
+                    'buffer_size': 3,  # Matches grid_generation.py default
+                    'reasoning': 'Coastal configuration with feature preservation: ~1km resolution, minimal smoothing to preserve canyons/ridges.'
+                }
+            else:
+                config = {
+                    'dx_deg': 0.02,
+                    'dy_deg': 0.02,
+                    'N_layers': 40,
+                    'theta_s': 6.0,
+                    'theta_b': 2.0,
+                    'hc': -500,  # Negative value, matches grid_generation.py
+                    'initial_smooth_sigma': 0.001,  # Matches grid_generation.py default
+                    'hmin': -5.0,
+                    'rx0_thresh': 0.3,  # Matches grid_generation.py default
+                    'max_iter': 5,  # Matches grid_generation.py default
+                    'smooth_sigma': 1.0,  # Matches grid_generation.py default
+                    'buffer_size': 3,  # Matches grid_generation.py default
+                    'reasoning': 'Coastal configuration: ~2km resolution, 40 levels with balanced surface/bottom stretching.'
+                }
+        elif any(word in goals_lower for word in ['mesoscale', 'regional', 'circulation']):
+            config = {
+                'dx_deg': 0.05,
+                'dy_deg': 0.05,
+                'N_layers': 40,
+                'theta_s': 5.0,
+                'theta_b': 0.5,
+                'hc': -500,  # Negative value, matches grid_generation.py
+                'initial_smooth_sigma': 0.001,  # Matches grid_generation.py default
+                'hmin': -5.0,
+                'rx0_thresh': 0.3,  # Matches grid_generation.py default
+                'max_iter': 5,  # Matches grid_generation.py default
+                'smooth_sigma': 1.0,  # Matches grid_generation.py default
+                'buffer_size': 3,  # Matches grid_generation.py default
+                'reasoning': 'Mesoscale configuration: ~5km resolution, 40 levels with moderate surface stretching.'
+            }
+        else:  # Default/general
+            config = {
+                'dx_deg': 0.05,
+                'dy_deg': 0.05,
+                'N_layers': 40,
+                'theta_s': 5.0,
+                'theta_b': 0.5,
+                'hc': -500,  # Negative value, matches grid_generation.py
+                'initial_smooth_sigma': 0.001,  # Matches grid_generation.py default
+                'hmin': -5.0,
+                'rx0_thresh': 0.3,  # Matches grid_generation.py default
+                'max_iter': 5,  # Matches grid_generation.py default
+                'smooth_sigma': 1.0,  # Matches grid_generation.py default
+                'buffer_size': 3,  # Matches grid_generation.py default
+                'reasoning': 'General ocean modeling configuration: ~5km resolution, standard vertical structure.'
+            }
+        
+        return config
     
     def parse_location_basic(self, prompt: str) -> Dict:
         """
@@ -656,7 +978,8 @@ Example: {"lat_min": 35.0, "lat_max": 42.0, "lon_min": -75.0, "lon_max": -65.0, 
         return result
     
     def download_bathymetry(self, lat_range: tuple, lon_range: tuple, 
-                           output_file: str = "downloaded_bathy.nc") -> str:
+                           output_file: str = "downloaded_bathy.nc",
+                           buffer_deg: float = 0.5) -> str:
         """
         Download and subset bathymetry data using model-tools.
         
@@ -664,13 +987,20 @@ Example: {"lat_min": 35.0, "lat_max": 42.0, "lon_min": -75.0, "lon_max": -65.0, 
             lat_range: Tuple of (lat_min, lat_max)
             lon_range: Tuple of (lon_min, lon_max)
             output_file: Output filename
+            buffer_deg: Extra degrees to download beyond requested region to avoid edge effects (default: 0.5°)
             
         Returns:
             Path to downloaded bathymetry file
         """
+        # Add buffer to avoid edge effects during smoothing
+        lat_min_buffered = max(-90, lat_range[0] - buffer_deg)
+        lat_max_buffered = min(90, lat_range[1] + buffer_deg)
+        lon_min_buffered = lon_range[0] - buffer_deg
+        lon_max_buffered = lon_range[1] + buffer_deg
+        
         print(f"\n📥 Downloading bathymetry for region:")
-        print(f"   Latitude: {lat_range[0]:.2f}° to {lat_range[1]:.2f}°")
-        print(f"   Longitude: {lon_range[0]:.2f}° to {lon_range[1]:.2f}°")
+        print(f"   Latitude: {lat_range[0]:.2f}° to {lat_range[1]:.2f}° (buffered to {lat_min_buffered:.2f}° to {lat_max_buffered:.2f}°)")
+        print(f"   Longitude: {lon_range[0]:.2f}° to {lon_range[1]:.2f}° (buffered to {lon_min_buffered:.2f}° to {lon_max_buffered:.2f}°)")
         
         # Download SRTM15+ bathymetry
         url = "https://topex.ucsd.edu/pub/global_topo_1min/topo_20.1.nc"
@@ -680,9 +1010,11 @@ Example: {"lat_min": 35.0, "lat_max": 42.0, "lon_min": -75.0, "lon_max": -65.0, 
         # Download full file if not exists
         self.downloader.download_file(url, full_file)
         
-        # Subset to region
-        print(f"   Subsetting to region...")
-        self.downloader.subset_dataset(full_file, output_path, lat_range, lon_range)
+        # Subset to buffered region
+        print(f"   Subsetting to buffered region...")
+        self.downloader.subset_dataset(full_file, output_path, 
+                                     (lat_min_buffered, lat_max_buffered),
+                                     (lon_min_buffered, lon_max_buffered))
         
         print(f"✓ Bathymetry saved to: {output_path}")
         return output_path
@@ -771,8 +1103,8 @@ Example: {"lat_min": 35.0, "lat_max": 42.0, "lon_min": -75.0, "lon_max": -65.0, 
             raise ValueError("Cannot find bathymetry variable (z or elevation) in dataset")
         
         # Interpolate and smooth bathymetry (following model-tools/scripts/grid_generation.py)
-        # Use initial smoothing during interpolation for better results
-        initial_smooth_sigma = 10 if smoothing else None
+        # Use configurable initial smoothing from parameters
+        initial_smooth_sigma = params.get('initial_smooth_sigma', 0.001) if smoothing else None
         h = grid_tools.interpolate_bathymetry(
             bathy, bathy_lon, bathy_lat, 
             lon_rho_grid, lat_rho_grid,
@@ -797,14 +1129,18 @@ Example: {"lat_min": 35.0, "lat_max": 42.0, "lon_min": -75.0, "lon_max": -65.0, 
             print(f"   Initial max(rx0) = {initial_max_rx0:.4f}")
             
             # Apply iterative localized smoothing for steep regions
+            max_iter = params.get('max_iter', 5)
+            smooth_sigma = params.get('smooth_sigma', 1)
+            buffer_size = params.get('buffer_size', 3)
             print(f"   Applying iterative bathymetry smoothing (rx0 < {rx0_thresh})...")
             h = grid_tools.iterative_smoothing(
-                h, rx0_thresh=rx0_thresh, max_iter=20, sigma=6, buffer_size=5
+                h, rx0_thresh=rx0_thresh, max_iter=max_iter, sigma=smooth_sigma, buffer_size=buffer_size
             )
         
         # Create vertical coordinate arrays using model-tools
         theta_s = params.get('theta_s', 5.0)
-        theta_b = params.get('theta_b', 0.4)
+        theta_b = params.get('theta_b', 0.5)
+        hc = params.get('hc', -500)  # Critical depth (negative during computation)
         sigma_r = grid_tools.compute_sigma(N_layers, type='r')
         sigma_w = grid_tools.compute_sigma(N_layers, type='w')
         Cs_r = grid_tools.compute_cs(sigma_r, theta_s, theta_b)
@@ -813,6 +1149,9 @@ Example: {"lat_min": 35.0, "lat_max": 42.0, "lon_min": -75.0, "lon_max": -65.0, 
         # Prepare sigma parameters dictionary for model-tools function
         sigma_params = {
             'N': N_layers,
+            'hc': abs(hc),  # Convert to positive for ROMS grid
+            'theta_s': theta_s,
+            'theta_b': theta_b,
             'sigma_r': sigma_r,
             'sigma_w': sigma_w,
             'Cs_r': Cs_r,
@@ -833,6 +1172,7 @@ Example: {"lat_min": 35.0, "lat_max": 42.0, "lon_min": -75.0, "lon_max": -65.0, 
             "rx0_threshold": rx0_thresh,
             "theta_s": theta_s,
             "theta_b": theta_b,
+            "hc": abs(hc),  # Store as positive in attributes
         }
         
         # Create ROMS grid dataset using model-tools function
@@ -840,6 +1180,20 @@ Example: {"lat_min": 35.0, "lat_max": 42.0, "lon_min": -75.0, "lon_max": -65.0, 
         grid_ds = grid_tools.create_roms_grid_dataset(
             lon_rho_grid, lat_rho_grid, -h,  # ROMS uses positive depths
             masks, staggered, metrics, sigma_params, global_attrs
+        )
+        
+        # Add vertical stretching parameters as scalar variables
+        grid_ds['hc'] = xr.DataArray(
+            abs(hc),  # Store as positive for ROMS
+            attrs={'long_name': 'S-coordinate critical depth', 'units': 'meter'}
+        )
+        grid_ds['theta_s'] = xr.DataArray(
+            theta_s,
+            attrs={'long_name': 'S-coordinate surface control parameter', 'units': ''}
+        )
+        grid_ds['theta_b'] = xr.DataArray(
+            theta_b,
+            attrs={'long_name': 'S-coordinate bottom control parameter', 'units': ''}
         )
         
         # Save grid
@@ -890,26 +1244,28 @@ Example: {"lat_min": 35.0, "lat_max": 42.0, "lon_min": -75.0, "lon_max": -65.0, 
     
     def execute_workflow(self, prompt: str) -> Dict:
         """
-        Main workflow: parse prompt -> prompt for parameters -> download bathymetry -> generate grid.
+        Main workflow with intelligent parameter suggestion.
         
-        Workflow steps:
-        1. Parse natural language prompt to extract region bounds (lat/lon)
-        2. Interactively prompt user for comprehensive grid parameters:
-           - Horizontal resolution (dx, dy in degrees)
-           - Vertical configuration (N_layers, theta_s, theta_b, hc)
-           - Bathymetry smoothing (initial_smooth_sigma, hmin, rx0_thresh,
-             max_iter, smooth_sigma, buffer_size)
-        3. Download bathymetry data for the region
-        4. Generate ROMS grid with all specified parameters
-        5. Create visualization plots
+        Enhanced workflow steps:
+        1. Parse natural language prompt to extract:
+           - Region bounds (lat/lon)
+           - Simulation goals/objectives (if mentioned)
+        2. If no simulation goals specified, prompt user for them
+        3. Use LLM + domain knowledge to suggest appropriate grid parameters
+           based on region and simulation objectives
+        4. Offer suggested parameters to user - they can accept or customize
+        5. If customizing, interactively prompt for each parameter
+        6. Download bathymetry data for the region
+        7. Generate ROMS grid with all specified parameters
+        8. Create visualization plots
         
         Args:
-            prompt: Natural language description of desired ROMS grid region.
-                   Should include location/region name or lat/lon bounds.
+            prompt: Natural language description of desired ROMS grid.
+                   Can include location, simulation goals, and specific parameters.
                    Examples:
-                   - "Create a grid for Chesapeake Bay"
-                   - "Set up a model from lat 35-42, lon -75 to -65"
-                   - "Generate a grid for the US East Coast"
+                   - "Create a submesoscale-resolving grid of the Gulf Stream"
+                   - "Set up a coastal model for Puget Sound"
+                   - "Generate a mesoscale grid for lat 35-42, lon -75 to -65"
             
         Returns:
             Dictionary with workflow results including:
@@ -925,15 +1281,48 @@ Example: {"lat_min": 35.0, "lat_max": 42.0, "lon_min": -75.0, "lon_max": -65.0, 
         print("=" * 60)
         print(f"\n📝 User request: {prompt}\n")
         
-        # Step 1: Parse location using LLM
+        # Step 1: Parse location and simulation goals using LLM
         params = self.parse_location_with_llm(prompt)
         if not params or 'lat_min' not in params:
             return {"error": "Could not extract lat/lon bounds from prompt"}
         
-        # Step 2: Prompt user for grid parameters
-        params = self._prompt_for_grid_parameters(params)
+        # Step 2: If no simulation goals specified, prompt for them
+        simulation_goals = params.get('simulation_goals')
+        if not simulation_goals:
+            simulation_goals = self._prompt_for_simulation_goals()
+            params['simulation_goals'] = simulation_goals
+        else:
+            print(f"\n✓ Simulation goals identified: {simulation_goals}")
         
-        # Step 3: Download bathymetry
+        # Step 3: Check if any parameters were explicitly specified in prompt
+        explicit_params = {k: v for k, v in params.items() 
+                          if k not in ['lat_min', 'lat_max', 'lon_min', 'lon_max', 'simulation_goals'] 
+                          and v is not None}
+        
+        # Step 4: If no explicit parameters, suggest based on goals and region
+        if not explicit_params:
+            # Get intelligent suggestions
+            suggestions = self._suggest_grid_parameters_with_llm(params, simulation_goals)
+            
+            # Offer suggestions to user
+            use_suggestions = self._offer_suggested_parameters(suggestions)
+            
+            if use_suggestions:
+                # Apply suggested parameters (remove 'reasoning' if present)
+                for key in ['dx_deg', 'dy_deg', 'N_layers', 'theta_s', 'theta_b', 'hc',
+                           'initial_smooth_sigma', 'hmin', 'rx0_thresh', 'max_iter',
+                           'smooth_sigma', 'buffer_size']:
+                    if key in suggestions:
+                        params[key] = suggestions[key]
+            else:
+                # User wants to customize - prompt for each parameter
+                params = self._prompt_for_grid_parameters(params)
+        else:
+            # Some parameters were explicit - only prompt for missing ones
+            print(f"\n✓ Found {len(explicit_params)} explicitly specified parameters")
+            params = self._prompt_for_grid_parameters(params)
+        
+        # Step 5: Download bathymetry
         try:
             bathy_file = self.download_bathymetry(
                 (params['lat_min'], params['lat_max']),
@@ -942,7 +1331,7 @@ Example: {"lat_min": 35.0, "lat_max": 42.0, "lon_min": -75.0, "lon_max": -65.0, 
         except Exception as e:
             return {"error": f"Bathymetry download failed: {str(e)}"}
         
-        # Step 4: Generate ROMS grid
+        # Step 6: Generate ROMS grid
         try:
             grid_file = self.generate_grid(bathy_file, params)
         except Exception as e:
