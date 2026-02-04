@@ -225,29 +225,29 @@ class ROMSInitAgent:
         
         # If using API, prompt for time buffer
         if params['use_api']:
-            if 'time_buffer_days' not in params or params['time_buffer_days'] is None:
+            if 'time_buffer_hours' not in params or params['time_buffer_hours'] is None:
                 while True:
                     try:
-                        buffer_input = input("Time buffer for API download in days (default: 1): ").strip()
+                        buffer_input = input("Time buffer for API download in hours (default: 24): ").strip()
                         if not buffer_input:
-                            params['time_buffer_days'] = 1
-                            print("  ✓ Using default: 1 day")
+                            params['time_buffer_hours'] = 24
+                            print("  ✓ Using default: 24 hours")
                             break
                         buffer = int(buffer_input)
                         if buffer < 0:
                             print("  ⚠ Buffer must be non-negative. Please try again.")
                             continue
-                        params['time_buffer_days'] = buffer
-                        print(f"  ✓ Using time buffer: {buffer} days")
+                        params['time_buffer_hours'] = buffer
+                        print(f"  ✓ Using time buffer: {buffer} hours")
                         break
                     except ValueError:
                         print("  ⚠ Please enter a valid integer.")
                     except KeyboardInterrupt:
-                        print("\n  ⚠ Interrupted. Using default: 1 day")
-                        params['time_buffer_days'] = 1
+                        print("\n  ⚠ Interrupted. Using default: 24 hours")
+                        params['time_buffer_hours'] = 24
                         break
             else:
-                print(f"  ✓ Using time buffer: {params['time_buffer_days']} days (from prompt)")
+                print(f"  ✓ Using time buffer: {params['time_buffer_hours']} hours (from prompt)")
         
         # Set default variable names (GLORYS standard)
         params.setdefault('source_vars', {
@@ -291,7 +291,7 @@ class ROMSInitAgent:
         if not params['use_api']:
             print(f"NetCDF path:         {params['netcdf_path']}")
         else:
-            print(f"Time buffer:         {params['time_buffer_days']} days")
+            print(f"Time buffer:         {params['time_buffer_hours']} hours")
         print(f"Fill values:")
         print(f"  Temperature:       {params['fill_values']['temp']} °C")
         print(f"  Salinity:          {params['fill_values']['salt']} PSU")
@@ -309,7 +309,7 @@ class ROMSInitAgent:
         - init_time: Initialization date/time (required)
         - use_api: Whether to use API vs NetCDF file (optional)
         - netcdf_path: Path to NetCDF file if not using API (optional)
-        - time_buffer_days: Buffer for API downloads (optional)
+        - time_buffer_hours: Buffer for API downloads in hours (optional)
         
         Args:
             prompt: User's natural language request
@@ -331,7 +331,7 @@ Extract the following information if explicitly mentioned:
 1. init_time: Initialization date and time (format: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS) - ONLY if explicitly stated
 2. use_api: Whether to use Copernicus Marine API (true) or local NetCDF file (false) - ONLY if explicitly mentioned
 3. netcdf_path: Path to local NetCDF file - ONLY if a file path is explicitly provided
-4. time_buffer_days: Days before/after init_time to download from API - ONLY if explicitly mentioned
+4. time_buffer_hours: Hours before/after init_time to download from API - ONLY if explicitly mentioned
 
 Common date interpretations (extract if mentioned):
 - "January 1, 2024" -> "2024-01-01T00:00:00"
@@ -347,13 +347,13 @@ For data source (use_api):
 Return ONLY a valid JSON object with the extracted parameters. Use null for any parameter not explicitly mentioned.
 
 Example 1 - "Initialize for January 1, 2024":
-{"init_time": "2024-01-01T00:00:00", "use_api": null, "netcdf_path": null, "time_buffer_days": null}
+{"init_time": "2024-01-01T00:00:00", "use_api": null, "netcdf_path": null, "time_buffer_hours": null}
 
 Example 2 - "Initialize for January 1, 2024 using Copernicus API":
-{"init_time": "2024-01-01T00:00:00", "use_api": true, "netcdf_path": null, "time_buffer_days": null}
+{"init_time": "2024-01-01T00:00:00", "use_api": true, "netcdf_path": null, "time_buffer_hours": null}
 
 Example 3 - "Initialize for 2024-01-01 from file /path/to/data.nc":
-{"init_time": "2024-01-01T00:00:00", "use_api": false, "netcdf_path": "/path/to/data.nc", "time_buffer_days": null}"""
+{"init_time": "2024-01-01T00:00:00", "use_api": false, "netcdf_path": "/path/to/data.nc", "time_buffer_hours": null}"""
         
         try:
             print("🤖 Querying LLM to parse request...")
@@ -476,7 +476,7 @@ Example 3 - "Initialize for 2024-01-01 from file /path/to/data.nc":
             lat_range=lat_range,
             use_api=params['use_api'],
             netcdf_path=params.get('netcdf_path'),
-            time_buffer_days=params.get('time_buffer_days', 1)
+            time_buffer_hours=params.get('time_buffer_hours', 24)
         )
         
         # Add deep ocean layer

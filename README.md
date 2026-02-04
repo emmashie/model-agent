@@ -2,13 +2,39 @@
 
 Intelligent agents for automating ROMS (Regional Ocean Modeling System) model setup using Large Language Models (LLMs) and the model-tools library.
 
+## Repository Structure
+
+```
+model-agent/
+├── agents/                  # Core agent implementations
+│   ├── llm_grid_agent.py       # Intelligent grid generation
+│   ├── llm_init_agent.py       # Initial conditions generation
+│   ├── llm_boundary_agent.py   # Boundary conditions generation
+│   ├── llm_forcing_agent.py    # Surface forcing generation
+│   └── llm_complete_agent.py   # Combined workflow (recommended)
+├── examples/                # Unified example scripts
+│   └── run_examples.py         # All examples in one script
+├── tests/                   # Unified test scripts
+│   └── run_tests.py            # All tests in one script
+├── docs/                    # Documentation
+│   ├── CHANGES.md              # Changelog
+│   ├── INITIALIZATION_FIXES.md # Init fixes documentation
+│   ├── INTELLIGENT_SUGGESTION_ENHANCEMENT.md
+│   └── OUTPUT_CONFIG.md        # Output configuration guide
+├── README.md                # This file
+├── requirements.txt         # Python dependencies
+└── quickstart.sh           # Quick setup script
+```
+
 ## Overview
 
-Three LLM-powered agents provide a complete workflow from natural language request to ready-to-run ROMS model:
+Five LLM-powered agents provide a complete workflow from natural language request to ready-to-run ROMS model:
 
-1. **`llm_grid_agent.py`** - Intelligent grid generation with parameter suggestions
-2. **`llm_init_agent.py`** - Initial conditions generation
-3. **`llm_complete_agent.py`** - Combined workflow (recommended)
+1. **`agents/llm_grid_agent.py`** - Intelligent grid generation with parameter suggestions
+2. **`agents/llm_init_agent.py`** - Initial conditions generation
+3. **`agents/llm_boundary_agent.py`** - Boundary conditions generation with automatic ocean boundary detection
+4. **`agents/llm_forcing_agent.py`** - Surface forcing generation from ERA5 data
+5. **`agents/llm_complete_agent.py`** - Combined workflow (recommended)
 
 ## Features
 
@@ -51,6 +77,18 @@ Three LLM-powered agents provide a complete workflow from natural language reque
 5. Compute derived variables (barotropic velocities, vertical velocity)
 6. Create ROMS initial conditions file
 
+### 🌐 Boundary Conditions Generation
+1. Parse time range from natural language
+2. **Automatically detect ocean boundaries** from grid mask
+3. Interactive prompts for boundary parameters:
+   - Start/end dates for boundary forcing
+   - Data source (Copernicus Marine API or NetCDF file)
+   - Climatology file creation option
+4. Download GLORYS ocean data
+5. Interpolate to ROMS grid boundaries
+6. Compute derived variables (barotropic velocities, vertical velocity)
+7. Create boundary forcing and optional climatology files
+
 ### 🔗 Combined Workflow
 - Seamless integration of grid generation and initialization
 - Single natural language request → complete model setup
@@ -72,7 +110,7 @@ export LLM_API_KEY="your-api-key-here"
 ### Complete Workflow (Recommended)
 
 ```python
-from llm_complete_agent import ROMSCompleteSetupAgent
+from agents.llm_complete_agent import ROMSCompleteSetupAgent
 
 # Initialize combined agent
 agent = ROMSCompleteSetupAgent(
@@ -93,7 +131,7 @@ print(f"Initial conditions: {result['files']['initial_conditions']}")
 ### Grid Only
 
 ```python
-from llm_grid_agent import ROMSGridAgent
+from agents.llm_grid_agent import ROMSGridAgent
 
 agent = ROMSGridAgent(
     model_tools_path="/global/cfs/cdirs/m4304/enuss/model-tools"
@@ -106,7 +144,7 @@ print(f"Grid file: {result['grid_file']}")
 ### Initial Conditions Only
 
 ```python
-from llm_init_agent import ROMSInitAgent
+from agents.llm_init_agent import ROMSInitAgent
 
 agent = ROMSInitAgent(
     model_tools_path="/global/cfs/cdirs/m4304/enuss/model-tools",
@@ -115,6 +153,35 @@ agent = ROMSInitAgent(
 
 result = agent.execute_workflow("Initialize for January 1, 2024")
 print(f"Initial conditions: {result['init_file']}")
+```
+
+### Boundary Conditions Only
+
+```python
+from agents.llm_boundary_agent import ROMSBoundaryAgent
+
+agent = ROMSBoundaryAgent(
+    model_tools_path="/global/cfs/cdirs/m4304/enuss/model-tools",
+    grid_file="/path/to/roms_grid.nc"
+)
+
+result = agent.execute_workflow("Create boundary conditions for January 2024")
+print(f"Boundary forcing: {result['files']['boundary']}")
+print(f"Climatology: {result['files']['climatology']}")
+```
+
+### Surface Forcing Only
+
+```python
+from agents.llm_forcing_agent import ROMSSurfaceForcingAgent
+
+agent = ROMSSurfaceForcingAgent(
+    model_tools_path="/global/cfs/cdirs/m4304/enuss/model-tools",
+    grid_file="/path/to/roms_grid.nc"
+)
+
+result = agent.execute_workflow("Create surface forcing for January 2024")
+print(f"Surface forcing: {result['file']}")
 ```
 
 ## Example Natural Language Requests
@@ -141,6 +208,17 @@ print(f"Initial conditions: {result['init_file']}")
 - "Initialize for January 1, 2024"
 - "Create initial conditions for start of 2024 using API"
 - "Initialize model for mid-July 2023"
+
+### Boundary Conditions
+- "Create boundary conditions for January 2024"
+- "Generate boundary forcing from 2024-01-01 to 2024-01-31 with climatology"
+
+### Surface Forcing
+- "Create surface forcing for January 2024"
+- "Generate ERA5 forcing from 2024-01-01 to 2024-01-31, hourly resolution"
+- "Make surface forcing for summer 2024, no radiation, daily"
+- "Make boundary conditions for summer 2024, skip climatology"
+- "Set up boundaries from June to August 2024 using API"
 
 ## Intelligent Parameter Suggestion Workflow
 
@@ -274,14 +352,66 @@ The LLM recognizes common ocean regions:
 
 ```bash
 # Complete workflow
-python llm_complete_agent.py
+python agents/llm_complete_agent.py
 
 # Grid generation only
-python llm_grid_agent.py
+python agents/llm_grid_agent.py
 
 # Initial conditions only  
-python llm_init_agent.py
+python agents/llm_init_agent.py
+
+# Boundary conditions only
+python agents/llm_boundary_agent.py \
+    --model-tools-path /path/to/model-tools \
+    --grid-file /path/to/roms_grid.nc \
+    --prompt "Create boundary conditions for January 2024"
 ```
+
+## Running Examples
+
+The repository includes a unified examples script with multiple demonstration scenarios:
+
+```bash
+# List all available examples
+python examples/run_examples.py --list
+
+# Run a specific example
+python examples/run_examples.py --example grid_explicit
+python examples/run_examples.py --example intelligent_submesoscale
+
+# Interactive mode
+python examples/run_examples.py --interactive
+```
+
+Available example categories:
+- **Grid Agent Examples**: Basic grid generation workflows
+- **Intelligent Grid Examples**: Examples with parameter suggestions
+- **Complete Workflow Examples**: Full setup demonstrations
+- **Output Configuration Demos**: Directory configuration patterns
+
+## Running Tests
+
+The repository includes a unified test script for validation:
+
+```bash
+# List all available tests
+python tests/run_tests.py --list
+
+# Run a specific test
+python tests/run_tests.py --test basic_parsing
+python tests/run_tests.py --test intelligent_direct
+
+# Run a test group
+python tests/run_tests.py --test basic
+python tests/run_tests.py --test intelligent
+
+# Run all tests
+python tests/run_tests.py --all
+```
+
+Test categories:
+- **Basic Tests**: Core functionality without LLM
+- **Intelligent Grid Tests**: Parameter suggestion validation
 
 ## API Configuration
 
@@ -304,6 +434,8 @@ agent = ROMSCompleteSetupAgent(
 The `ROMSCompleteSetupAgent` demonstrates how to link the grid and initialization agents:
 
 ```python
+from agents.llm_complete_agent import ROMSCompleteSetupAgent
+
 # The combined agent:
 # 1. Creates a grid using ROMSGridAgent
 # 2. Passes the grid file to ROMSInitAgent  
@@ -320,8 +452,8 @@ init_result = result['init_result']
 You can also manually link them:
 
 ```python
-from llm_grid_agent import ROMSGridAgent
-from llm_init_agent import ROMSInitAgent
+from agents.llm_grid_agent import ROMSGridAgent
+from agents.llm_init_agent import ROMSInitAgent
 
 # Step 1: Generate grid
 grid_agent = ROMSGridAgent(model_tools_path="/path/to/model-tools")
@@ -362,12 +494,20 @@ The agents use model-tools library functions:
 
 ## Related Files
 
+- `agents/` - Core agent implementations
+  - `llm_grid_agent.py` - Grid generation agent
+  - `llm_init_agent.py` - Initial conditions agent
+  - `llm_complete_agent.py` - Combined workflow agent
+- `examples/` - Example scripts demonstrating various workflows
+- `tests/` - Test scripts for validation
+- `docs/` - Additional documentation
+  - `CHANGES.md` - Changelog
+  - `INITIALIZATION_FIXES.md` - Init fixes documentation
+  - `INTELLIGENT_SUGGESTION_ENHANCEMENT.md` - Parameter suggestion details
+  - `OUTPUT_CONFIG.md` - Output configuration guide
 - `model-tools/` - Core ROMS data processing library
 - `model-tools/scripts/grid_generation.py` - Original grid script
 - `model-tools/scripts/initialize.py` - Original initialization script
-- **Bathymetry**: h (positive depths)
-- **Masks**: mask_rho, mask_u, mask_v, mask_psi
-- **Vertical**: s_rho, s_w (sigma coordinates)
 
 ## Architecture
 
