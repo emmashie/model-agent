@@ -33,6 +33,12 @@ import json
 import numpy as np
 import xarray as xr
 from datetime import datetime
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+import matplotlib.pyplot as plt
+import cmocean
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
 
 # Try to import openai, but make it optional
 try:
@@ -424,6 +430,115 @@ Example 3 - "Initialize for 2024-01-01 from file /path/to/data.nc":
         
         return result
     
+    def _plot_surface_fields(self, grid: xr.Dataset, temp: np.ndarray, salt: np.ndarray, 
+                            u: np.ndarray, v: np.ndarray, output_path: str) -> None:
+        """
+        Create plots of surface temperature, salinity, u, and v velocities.
+        
+        Args:
+            grid: ROMS grid dataset
+            temp: 3D temperature array (s_rho, eta_rho, xi_rho)
+            salt: 3D salinity array (s_rho, eta_rho, xi_rho)
+            u: 3D u-velocity array (s_rho, eta_rho, xi_u)
+            v: 3D v-velocity array (s_rho, eta_v, xi_rho)
+            output_path: Path to the netcdf output file (used to derive plot filenames)
+        """
+        # Extract surface layer (last index along first dimension is top layer)
+        temp_surface = temp[-1, :, :]
+        salt_surface = salt[-1, :, :]
+        u_surface = u[-1, :, :]
+        v_surface = v[-1, :, :]
+        
+        # Get grid coordinates
+        lon_rho = grid.lon_rho.values
+        lat_rho = grid.lat_rho.values
+        lon_u = grid.lon_u.values
+        lat_u = grid.lat_u.values
+        lon_v = grid.lon_v.values
+        lat_v = grid.lat_v.values
+        
+        # Compute domain extent
+        lon_min, lon_max = float(lon_rho.min()), float(lon_rho.max())
+        lat_min, lat_max = float(lat_rho.min()), float(lat_rho.max())
+        central_lon = (lon_min + lon_max) / 2
+        central_lat = (lat_min + lat_max) / 2
+        
+        # Create base filename for plots
+        base_path = output_path.replace('.nc', '')
+        
+        # Create figure with 4 subplots
+        fig = plt.figure(figsize=(16, 14))
+        
+        # Define projection
+        proj = ccrs.LambertConformal(central_longitude=central_lon, central_latitude=central_lat)
+        data_proj = ccrs.PlateCarree()
+        
+        # Plot 1: Surface Temperature
+        ax1 = plt.subplot(2, 2, 1, projection=proj)
+        temp_masked = np.ma.masked_where(grid.mask_rho.values == 0, temp_surface)
+        pc1 = ax1.pcolormesh(lon_rho, lat_rho, temp_masked, 
+                            cmap=cmocean.cm.thermal, shading='auto', 
+                            transform=data_proj)
+        ax1.coastlines(resolution='10m', color='k', linewidth=0.5)
+        ax1.add_feature(cfeature.LAND, zorder=100, edgecolor='k', facecolor='0.8')
+        ax1.set_extent([lon_min, lon_max, lat_min, lat_max], crs=data_proj)
+        plt.colorbar(pc1, ax=ax1, orientation='vertical', label='Temperature (°C)', pad=0.05)
+        ax1.set_title('Surface Temperature', fontsize=12, fontweight='bold')
+        ax1.gridlines(draw_labels=True, linewidth=0.5, color='gray', alpha=0.5, linestyle='--')
+        
+        # Plot 2: Surface Salinity
+        ax2 = plt.subplot(2, 2, 2, projection=proj)
+        salt_masked = np.ma.masked_where(grid.mask_rho.values == 0, salt_surface)
+        pc2 = ax2.pcolormesh(lon_rho, lat_rho, salt_masked, 
+                            cmap=cmocean.cm.haline, shading='auto', 
+                            transform=data_proj)
+        ax2.coastlines(resolution='10m', color='k', linewidth=0.5)
+        ax2.add_feature(cfeature.LAND, zorder=100, edgecolor='k', facecolor='0.8')
+        ax2.set_extent([lon_min, lon_max, lat_min, lat_max], crs=data_proj)
+        plt.colorbar(pc2, ax=ax2, orientation='vertical', label='Salinity (PSU)', pad=0.05)
+        ax2.set_title('Surface Salinity', fontsize=12, fontweight='bold')
+        ax2.gridlines(draw_labels=True, linewidth=0.5, color='gray', alpha=0.5, linestyle='--')
+        
+        # Plot 3: Surface U Velocity
+        ax3 = plt.subplot(2, 2, 3, projection=proj)
+        u_masked = np.ma.masked_where(grid.mask_u.values == 0, u_surface)
+        pc3 = ax3.pcolormesh(lon_u, lat_u, u_masked, 
+                            cmap=cmocean.cm.balance, shading='auto', 
+                            transform=data_proj,
+                            vmin=-np.abs(u_masked).max(), vmax=np.abs(u_masked).max())
+        ax3.coastlines(resolution='10m', color='k', linewidth=0.5)
+        ax3.add_feature(cfeature.LAND, zorder=100, edgecolor='k', facecolor='0.8')
+        ax3.set_extent([lon_min, lon_max, lat_min, lat_max], crs=data_proj)
+        plt.colorbar(pc3, ax=ax3, orientation='vertical', label='U Velocity (m/s)', pad=0.05)
+        ax3.set_title('Surface U Velocity (Eastward)', fontsize=12, fontweight='bold')
+        ax3.gridlines(draw_labels=True, linewidth=0.5, color='gray', alpha=0.5, linestyle='--')
+        
+        # Plot 4: Surface V Velocity
+        ax4 = plt.subplot(2, 2, 4, projection=proj)
+        v_masked = np.ma.masked_where(grid.mask_v.values == 0, v_surface)
+        pc4 = ax4.pcolormesh(lon_v, lat_v, v_masked, 
+                            cmap=cmocean.cm.balance, shading='auto', 
+                            transform=data_proj,
+                            vmin=-np.abs(v_masked).max(), vmax=np.abs(v_masked).max())
+        ax4.coastlines(resolution='10m', color='k', linewidth=0.5)
+        ax4.add_feature(cfeature.LAND, zorder=100, edgecolor='k', facecolor='0.8')
+        ax4.set_extent([lon_min, lon_max, lat_min, lat_max], crs=data_proj)
+        plt.colorbar(pc4, ax=ax4, orientation='vertical', label='V Velocity (m/s)', pad=0.05)
+        ax4.set_title('Surface V Velocity (Northward)', fontsize=12, fontweight='bold')
+        ax4.gridlines(draw_labels=True, linewidth=0.5, color='gray', alpha=0.5, linestyle='--')
+        
+        # Add overall title
+        fig.suptitle('Initial Conditions - Surface Fields', fontsize=16, fontweight='bold', y=0.995)
+        
+        plt.tight_layout()
+        
+        # Save plot
+        plot_file = base_path + '_surface_fields.png'
+        plt.savefig(plot_file, dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        
+        print(f"   ✓ Surface fields plot saved to: {plot_file}")
+    
     def generate_initial_conditions(self, params: Dict, output_file: str = "initial_conditions.nc") -> str:
         """
         Generate ROMS initial conditions file.
@@ -632,6 +747,10 @@ Example 3 - "Initialize for 2024-01-01 from file /path/to/data.nc":
         ds.to_netcdf(output_path, format='NETCDF4', engine='netcdf4')
         
         print(f"✓ Initial conditions saved to: {output_path}")
+        
+        # Create plots of surface fields
+        print(f"\n   Creating plots of surface initial conditions...")
+        self._plot_surface_fields(grid, temp_interp, sal_interp, u_interp, v_interp, output_path)
         
         return output_path
     

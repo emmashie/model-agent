@@ -31,6 +31,12 @@ from typing import Dict, Optional, Tuple, Any
 from datetime import datetime
 import numpy as np
 import xarray as xr
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+import matplotlib.pyplot as plt
+import cmocean
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
 
 try:
     from openai import OpenAI
@@ -412,6 +418,10 @@ Examples:
         try:
             forcing_file = self.save_forcing_file(interpolated_vars, processed_vars['time'], params)
             print(f"✓ Surface forcing saved: {forcing_file}")
+            
+            # Create plots of surface forcing variables
+            print(f"\n   Creating plots of surface forcing variables...")
+            self._plot_forcing_fields(interpolated_vars, forcing_file)
         except Exception as e:
             return {'success': False, 'error': f"Failed to save output file: {e}"}
         
@@ -610,6 +620,105 @@ Examples:
         print(f"   ✓ Interpolated {len(variables_to_interp)} variables")
         
         return interpolated_vars
+    
+    def _plot_forcing_fields(self, interpolated_vars: Dict[str, np.ndarray], 
+                            forcing_file: str) -> None:
+        """
+        Create plots of surface forcing variables at first time step.
+        
+        Args:
+            interpolated_vars: Dictionary with interpolated forcing variables
+            forcing_file: Path to the forcing file (used to derive plot filename)
+        """
+        # Get first time step for plotting
+        time_idx = 0
+        
+        # Get grid coordinates
+        lon_rho = self.grid.lon_rho.values
+        lat_rho = self.grid.lat_rho.values
+        
+        # Compute domain extent
+        lon_min, lon_max = float(lon_rho.min()), float(lon_rho.max())
+        lat_min, lat_max = float(lat_rho.min()), float(lat_rho.max())
+        central_lon = (lon_min + lon_max) / 2
+        central_lat = (lat_min + lat_max) / 2
+        
+        # Create figure with multiple subplots (2 rows x 4 columns)
+        fig = plt.figure(figsize=(20, 10))
+        
+        # Define projection
+        proj = ccrs.LambertConformal(central_longitude=central_lon, central_latitude=central_lat)
+        data_proj = ccrs.PlateCarree()
+        
+        # List of variables to plot with their properties
+        plot_vars = [
+            ('swrad', 'Shortwave Radiation', 'W/m²', cmocean.cm.solar, False),
+            ('lwrad', 'Longwave Radiation', 'W/m²', cmocean.cm.thermal, False),
+            ('Tair', 'Air Temperature', '°C', cmocean.cm.thermal, False),
+            ('qair', 'Relative Humidity', '%', cmocean.cm.haline, False),
+            ('Pair', 'Air Pressure', 'mbar', cmocean.cm.dense, False),
+            ('rain', 'Precipitation Rate', 'm/s', cmocean.cm.rain, False),
+            ('Uwind', 'U Wind', 'm/s', cmocean.cm.balance, True),
+            ('Vwind', 'V Wind', 'm/s', cmocean.cm.balance, True)
+        ]
+        
+        # Plot each variable
+        for idx, (var_name, title, units, cmap, symmetric) in enumerate(plot_vars, 1):
+            if var_name not in interpolated_vars:
+                continue
+                
+            ax = plt.subplot(2, 4, idx, projection=proj)
+            
+            # Get data for first time step
+            data = interpolated_vars[var_name][time_idx, :, :]
+            
+            # Apply masking if available
+            if hasattr(self.grid, 'mask_rho'):
+                data_masked = np.ma.masked_where(self.grid.mask_rho.values == 0, data)
+            else:
+                data_masked = data
+            
+            # Set color limits
+            if symmetric:
+                vmax = np.abs(data_masked).max()
+                vmin = -vmax
+            else:
+                vmin = None
+                vmax = None
+            
+            # Plot the data
+            pc = ax.pcolormesh(lon_rho, lat_rho, data_masked, 
+                              cmap=cmap, shading='auto', 
+                              transform=data_proj,
+                              vmin=vmin, vmax=vmax)
+            
+            # Add geographic features
+            ax.coastlines(resolution='10m', color='k', linewidth=0.5)
+            ax.add_feature(cfeature.LAND, zorder=100, edgecolor='k', facecolor='0.8')
+            ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=data_proj)
+            
+            # Add colorbar and title
+            plt.colorbar(pc, ax=ax, orientation='vertical', label=units, pad=0.05, shrink=0.8)
+            ax.set_title(title, fontsize=11, fontweight='bold')
+            
+            # Add gridlines
+            gl = ax.gridlines(draw_labels=True, linewidth=0.5, color='gray', 
+                            alpha=0.5, linestyle='--')
+            gl.top_labels = False
+            gl.right_labels = False
+        
+        # Add overall title
+        fig.suptitle('Surface Forcing Variables (First Time Step)', 
+                    fontsize=16, fontweight='bold', y=0.98)
+        
+        plt.tight_layout(rect=[0, 0, 1, 0.97])
+        
+        # Save plot
+        plot_file = forcing_file.replace('.nc', '_forcing_fields.png')
+        plt.savefig(plot_file, dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        
+        print(f"   ✓ Forcing fields plot saved to: {plot_file}")
     
     def save_forcing_file(self, interpolated_vars: Dict[str, np.ndarray], 
                          time: xr.DataArray, params: Dict[str, Any]) -> str:
